@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>أكلات ماما - المنيو الإلكتروني</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Arial; background: #0a0a0a; min-height: 100vh; }
+        .header { background: linear-gradient(135deg, #1a0505, #0a0a0a); padding: 30px 20px; text-align: center; border-bottom: 3px solid #ff6b35; }
+        .header h1 { font-size: 2.5em; color: #ff6b35; animation: glow 2s infinite; }
+        @keyframes glow { 0%,100% { text-shadow: 0 0 10px #ff6b35; } 50% { text-shadow: 0 0 30px #ff6b35; } }
+        .container { max-width: 800px; margin: 20px auto 100px; padding: 0 15px; }
+        .tabs { display: flex; gap: 8px; padding: 10px; overflow-x: auto; background: #1a1a1a; border-radius: 15px; margin-bottom: 20px; }
+        .tab { padding: 10px 18px; border-radius: 25px; cursor: pointer; white-space: nowrap; font-weight: bold; color: #888; }
+        .tab.active { background: #ff6b35; color: white; }
+        .menu-section { display: none; }
+        .menu-section.active { display: block; }
+        .menu-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .menu-card { background: #1a1a1a; border-radius: 15px; overflow: hidden; cursor: pointer; border: 2px solid #2d2d2d; transition: all 0.3s; }
+        .menu-card:active { transform: scale(0.92); border-color: #ff6b35; }
+        .card-image { width: 100%; height: 150px; object-fit: cover; display: block; }
+        .card-info { padding: 12px; text-align: center; }
+        .card-name { color: white; font-weight: bold; font-size: 1em; margin-bottom: 5px; }
+        .card-price { color: #ff6b35; font-weight: bold; font-size: 1.2em; }
+        .cart-fab { position: fixed; bottom: 20px; left: 20px; right: 20px; background: #ff6b35; color: white; border: none; padding: 18px; border-radius: 15px; font-size: 1.2em; cursor: pointer; display: none; font-weight: bold; z-index: 999; }
+        input { width: 100%; padding: 15px; border: 2px solid #ff6b35; border-radius: 15px; font-size: 1.1em; margin-bottom: 15px; background: #1a1a1a; color: white; }
+        .btn-primary { width: 100%; background: #ff6b35; color: white; border: none; padding: 15px; border-radius: 15px; font-size: 1.2em; cursor: pointer; font-weight: bold; }
+        .mama-container { position: fixed; bottom: 10px; right: 10px; z-index: 1000; cursor: pointer; }
+        .mama-body { font-size: 4em; animation: bounce 2s infinite; }
+        .mama-speech { position: absolute; bottom: 100%; right: 0; background: white; border-radius: 15px; padding: 10px 15px; font-size: 0.9em; color: #333; display: none; white-space: nowrap; }
+        @keyframes bounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+        @media (max-width: 600px) {
+            .header h1 { font-size: 2em; }
+            .menu-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+            .card-image { height: 120px; }
+            .mama-body { font-size: 3em; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>👩‍🍳 أكلات ماما</h1>
+        <p style="color:#aaa;">أحلى أكل بأحلى حب ❤️</p>
+    </div>
+    
+    <div class="container">
+        <input type="text" id="restaurant-id-input" placeholder="أدخل معرف المطعم" value="d9c7b322-9971-43d9-93a0-93b852206aa3">
+        <button class="btn-primary" onclick="loadMenu()">فتح المنيو 🍽️</button>
+        
+        <div id="tabs-container" style="display:none; margin-top:20px;"></div>
+        <div id="menu-content"></div>
+    </div>
+    
+    <div class="mama-container" onclick="mamaSpeak()">
+        <div class="mama-speech" id="mama-speech">أهلاً حبيبي! 💕</div>
+        <div class="mama-body">👩‍🍳</div>
+    </div>
+    
+    <button class="cart-fab" id="cart-fab" onclick="showCart()">🛒 عرض السلة</button>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        let cart = [];
+        let currentRestaurantId = null;
+        
+        function mamaSpeak(text) {
+            const speech = document.getElementById('mama-speech');
+            if (text) speech.textContent = text;
+            speech.style.display = 'block';
+            setTimeout(() => { speech.style.display = 'none'; }, 3000);
+        }
+        
+        async function loadMenu() {
+            const restaurantId = document.getElementById('restaurant-id-input').value;
+            if (!restaurantId) { mamaSpeak('اكتب معرف المطعم!'); return; }
+            
+            mamaSpeak('ثواني هجيبلك المنيو! 🏃‍♀️');
+            
+            const response = await fetch(`/api/menu/restaurant/${restaurantId}`);
+            const data = await response.json();
+            
+            if (data.success) {
+                currentRestaurantId = restaurantId;
+                
+                const tabsContainer = document.getElementById('tabs-container');
+                tabsContainer.style.display = 'flex';
+                tabsContainer.className = 'tabs';
+                tabsContainer.innerHTML = '';
+                
+                data.data.categories.forEach((cat, index) => {
+                    const tab = document.createElement('div');
+                    tab.className = 'tab' + (index === 0 ? ' active' : '');
+                    tab.textContent = cat.name;
+                    tab.onclick = () => switchTab(index);
+                    tabsContainer.appendChild(tab);
+                });
+                
+                const menuContent = document.getElementById('menu-content');
+                menuContent.innerHTML = '';
+                
+                data.data.categories.forEach((cat, catIndex) => {
+                    const section = document.createElement('div');
+                    section.className = 'menu-section' + (catIndex === 0 ? ' active' : '');
+                    
+                    const grid = document.createElement('div');
+                    grid.className = 'menu-grid';
+                    
+                    cat.menuItems.forEach((item) => {
+                        const card = document.createElement('div');
+                        card.className = 'menu-card';
+                        card.onclick = () => addToCart(item, card);
+                        
+                        const imgUrl = item.image_url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&h=300&fit=crop';
+                        
+                        card.innerHTML = `
+                            <img src="${imgUrl}" class="card-image" alt="${item.name}" loading="lazy" onerror="this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&h=300&fit=crop'">
+                            <div class="card-info">
+                                <div class="card-name">${item.name}</div>
+                                <div class="card-price">${item.price} ريال</div>
+                            </div>
+                        `;
+                        grid.appendChild(card);
+                    });
+                    
+                    section.appendChild(grid);
+                    menuContent.appendChild(section);
+                });
+                
+                mamaSpeak('تفضل! دي أحلى أكلاتي! 😋');
+            }
+        }
+        
+        function switchTab(index) {
+            document.querySelectorAll('.tab').forEach((t, i) => {
+                t.className = 'tab' + (i === index ? ' active' : '');
+            });
+            document.querySelectorAll('.menu-section').forEach((s, i) => {
+                s.className = 'menu-section' + (i === index ? ' active' : '');
+            });
+        }
+        
+        function addToCart(item, card) {
+            card.style.transform = 'scale(0.85)';
+            setTimeout(() => { card.style.transform = 'scale(1)'; }, 200);
+            
+            const existing = cart.find(i => i.id === item.id);
+            if (existing) { existing.quantity++; }
+            else { cart.push({ id: item.id, name: item.name, price: item.price, quantity: 1 }); }
+            
+            document.getElementById('cart-fab').style.display = 'block';
+            let total = 0;
+            cart.forEach(i => { total += i.price * i.quantity; });
+            document.getElementById('cart-fab').textContent = `🛒 عرض السلة (${total} ريال)`;
+            
+            mamaSpeak(`اخترت ${item.name}! 💕`);
+        }
+        
+        function showCart() {
+            alert('🛒 السلة:\n' + cart.map(i => `${i.name} × ${i.quantity} = ${i.price * i.quantity} ريال`).join('\n'));
+        }
+    </script>
+</body>
+</html>

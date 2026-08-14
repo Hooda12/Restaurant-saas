@@ -4,83 +4,54 @@ const http = require('http');
 const cors = require('cors');
 const path = require('path');
 const { Server } = require('socket.io');
-const { PrismaClient } = require('@prisma/client');
+const { Client } = require('pg');
+const crypto = require('crypto');
 
-const prisma = new PrismaClient();
 const app = express();
 const server = http.createServer(app);
 
-// إعداد Socket.io
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST", "PATCH", "DELETE"]
-  }
+// إعداد قاعدة البيانات
+const db = new Client({
+  host: 'localhost',
+  port: 5432,
+  database: 'restaurant_saas',
+  user: 'u0_a209'
 });
 
-// Middleware
+db.connect().catch(err => console.error('DB Error:', err));
+
+// إعداد Socket.io
+const io = new Server(server, {
+  cors: { origin: "*", methods: ["GET", "POST", "PATCH"] }
+});
+
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
-// ============ Socket.io Logic ============
 io.on('connection', (socket) => {
-  console.log(`🔌 عميل متصل: ${socket.id}`);
-
+  console.log(`عميل متصل: ${socket.id}`);
+  
   socket.on('join-restaurant', (data) => {
     const { restaurantId, role } = data;
     if (!restaurantId) return;
-    
     const roomName = `restaurant:${restaurantId}`;
     socket.join(roomName);
-    socket.data.restaurantId = restaurantId;
-    socket.data.role = role;
-    
-    console.log(`👤 العميل ${socket.id} انضم للغرفة ${roomName} كـ ${role}`);
-    socket.emit('joined-room', { 
-      restaurantId, 
-      message: 'تم الانضمام بنجاح' 
-    });
+    socket.emit('joined-room', { restaurantId, message: 'تم الانضمام بنجاح' });
   });
-
-  socket.on('call-waiter', (data) => {
-    const { restaurantId, tableId, message } = data;
-    const roomName = `restaurant:${restaurantId}`;
-    
-    io.to(roomName).emit('waiter-called', {
-      tableId,
-      message: message || 'طلب مساعدة',
-      timestamp: new Date(),
-      socketId: socket.id
-    });
-  });
-
+  
   socket.on('disconnect', () => {
-    console.log(`🔌 عميل منفصل: ${socket.id}`);
+    console.log(`عميل منفصل: ${socket.id}`);
   });
 });
 
-// دالة إرسال الطلبات
 function emitNewOrder(restaurantId, order) {
-  const roomName = `restaurant:${restaurantId}`;
-  io.to(roomName).emit('order-received', {
-    order,
-    timestamp: new Date()
-  });
+  io.to(`restaurant:${restaurantId}`).emit('order-received', { order, timestamp: new Date() });
 }
 
-// دالة تحديث حالة الطلب
 function emitOrderStatusUpdate(restaurantId, orderId, status) {
-  const roomName = `restaurant:${restaurantId}`;
-  io.to(roomName).emit('order-status-updated', {
-    orderId,
-    status,
-    updatedAt: new Date()
-  });
+  io.to(`restaurant:${restaurantId}`).emit('order-status-updated', { orderId, status });
 }
-
-// ============ API Routes ============
 
 // الصفحة الرئيسية
 app.get('/', (req, res) => {
@@ -89,25 +60,7 @@ app.get('/', (req, res) => {
 
 // فحص الصحة
 app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
-
-// الحصول على قائمة المطاعم
-app.get('/api/restaurants', async (req, res) => {
-  try {
-    const restaurants = await prisma.restaurant.findMany({
-      where: { isActive: true },
-      select: {
-        id: true,
-        name: true,
-        address: true,
-        phone: true
-      }
-    });
-    res.json({ success: true, data: restaurants });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
+  res.json({ status: 'OK' });
 });
 
 // جلب المنيو
@@ -115,75 +68,30 @@ app.get('/api/menu/restaurant/:restaurantId', async (req, res) => {
   try {
     const { restaurantId } = req.params;
     
-    const restaurant = await prisma.restaurant.findUnique({
-      where: { id: restaurantId },
-      include: {
-        categories: {
-          where: { isActive: true },
-          orderBy: { displayOrder: 'asc' },
-          include: {
-            menuItems: {
-              where: { isAvailable: true },
-              select: {
-                id: true,
-                name: true,
-                description: true,
-                price: true,
-                preparationTime: true
-              }
-            }
-          }
-        }
-      }
-    });
-
-    if (!restaurant) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'المطعم غير موجود' 
-      });
+    const restaurant = await db.query('SELECT * FROM restaurants WHERE id = $1', [restaurantId]);
+    if (restaurant.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'المطعم غير موجود' });
     }
-
-    res.json({ success: true, data: restaurant });
-  } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// جلب المنيو عبر QR
-app.get('/api/menu/qr/:qrCode', async (req, res) => {
-  try {
-    const { qrCode } = req.params;
     
-    const table = await prisma.table.findUnique({
-      where: { qrCode },
-      include: {
-        restaurant: {
-          include: {
-            categories: {
-              where: { isActive: true },
-              include: {
-                menuItems: {
-                  where: { isAvailable: true }
-                }
-              }
-            }
-          }
-        }
-      }
-    });
-
-    if (!table) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'QR code غير صالح' 
+    const categories = await db.query(
+      'SELECT * FROM categories WHERE restaurant_id = $1 AND is_active = true ORDER BY display_order',
+      [restaurantId]
+    );
+    
+    const menu = [];
+    for (const cat of categories.rows) {
+      const items = await db.query(
+        'SELECT id, name, description, price, preparation_time, image_url FROM menu_items WHERE category_id = $1 AND is_available = true',
+        [cat.id]
+      );
+      menu.push({
+        ...cat,
+        menuItems: items.rows
       });
     }
-
-    res.json({ success: true, data: table });
+    
+    res.json({ success: true, data: { ...restaurant.rows[0], categories: menu } });
   } catch (error) {
-    console.error('Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -192,89 +100,72 @@ app.get('/api/menu/qr/:qrCode', async (req, res) => {
 app.post('/api/orders', async (req, res) => {
   try {
     const { restaurantId, tableId, items, customerNote } = req.body;
-
-    if (!restaurantId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'معرف المطعم مطلوب' 
-      });
-    }
-
-    if (!items || items.length === 0) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'يجب إضافة أصناف للطلب' 
-      });
-    }
-
-    // حساب الإجمالي
+    
+    if (!restaurantId) return res.status(400).json({ success: false, message: 'معرف المطعم مطلوب' });
+    if (!items || items.length === 0) return res.status(400).json({ success: false, message: 'يجب إضافة أصناف' });
+    
     let totalAmount = 0;
     const orderItemsData = [];
-
+    
     for (const item of items) {
-      const menuItem = await prisma.menuItem.findFirst({
-        where: { 
-          id: item.menuItemId, 
-          restaurantId,
-          isAvailable: true 
-        }
-      });
-
-      if (!menuItem) {
-        return res.status(400).json({ 
-          success: false, 
-          message: `الصنف ${item.menuItemId} غير متوفر` 
-        });
+      const menuItem = await db.query(
+        'SELECT * FROM menu_items WHERE id = $1 AND restaurant_id = $2 AND is_available = true',
+        [item.menuItemId, restaurantId]
+      );
+      if (menuItem.rows.length === 0) {
+        return res.status(400).json({ success: false, message: 'الصنف غير متوفر' });
       }
-
-      totalAmount += menuItem.price * item.quantity;
-      orderItemsData.push({
-        menuItemId: menuItem.id,
-        quantity: item.quantity,
-        price: menuItem.price,
-        notes: item.notes || null
-      });
+      totalAmount += menuItem.rows[0].price * item.quantity;
+      orderItemsData.push({ ...menuItem.rows[0], quantity: item.quantity, notes: item.notes });
     }
-
-    // رقم الطلب
-    const lastOrder = await prisma.order.findFirst({
-      where: { restaurantId },
-      orderBy: { orderNumber: 'desc' }
-    });
-
-    const orderNumber = lastOrder ? lastOrder.orderNumber + 1 : 1;
-
-    // إنشاء الطلب
-    const order = await prisma.order.create({
-      data: {
-        restaurantId,
-        tableId: tableId || null,
-        orderNumber,
-        customerNote: customerNote || null,
-        totalAmount,
-        status: 'PENDING',
-        orderItems: { create: orderItemsData }
-      },
-      include: {
-        orderItems: {
-          include: {
-            menuItem: { select: { name: true } }
-          }
-        },
-        table: { select: { tableNumber: true } }
-      }
-    });
-
-    // إرسال عبر Socket.io
+    
+    const lastOrder = await db.query(
+      'SELECT order_number FROM orders WHERE restaurant_id = $1 ORDER BY order_number DESC LIMIT 1',
+      [restaurantId]
+    );
+    const orderNumber = lastOrder.rows.length > 0 ? lastOrder.rows[0].order_number + 1 : 1;
+    
+    const orderId = crypto.randomUUID();
+    await db.query(
+      'INSERT INTO orders (id, restaurant_id, table_id, order_number, status, customer_note, total_amount) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      [orderId, restaurantId, tableId, orderNumber, 'PENDING', customerNote, totalAmount]
+    );
+    
+    for (const item of orderItemsData) {
+      await db.query(
+        'INSERT INTO order_items (id, order_id, menu_item_id, quantity, price, notes) VALUES ($1, $2, $3, $4, $5, $6)',
+        [crypto.randomUUID(), orderId, item.id, item.quantity, item.price, item.notes]
+      );
+    }
+    
+    const order = { id: orderId, restaurantId, tableId, orderNumber, status: 'PENDING', customerNote, totalAmount };
     emitNewOrder(restaurantId, order);
-
-    res.status(201).json({ 
-      success: true, 
-      data: order,
-      message: `تم إرسال الطلب #${orderNumber} بنجاح` 
-    });
+    
+    res.status(201).json({ success: true, data: order, message: `تم إرسال الطلب #${orderNumber} بنجاح` });
   } catch (error) {
-    console.error('Error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// جلب الطلبات النشطة
+app.get('/api/orders/active/:restaurantId', async (req, res) => {
+  try {
+    const { restaurantId } = req.params;
+    const orders = await db.query(
+      "SELECT * FROM orders WHERE restaurant_id = $1 AND status IN ('PENDING', 'CONFIRMED', 'PREPARING', 'READY') ORDER BY created_at",
+      [restaurantId]
+    );
+    
+    for (const order of orders.rows) {
+      const items = await db.query(
+        'SELECT oi.*, mi.name as item_name FROM order_items oi JOIN menu_items mi ON oi.menu_item_id = mi.id WHERE oi.order_id = $1',
+        [order.id]
+      );
+      order.items = items.rows;
+    }
+    
+    res.json({ success: true, data: orders.rows });
+  } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -284,61 +175,102 @@ app.patch('/api/orders/:orderId/status', async (req, res) => {
   try {
     const { orderId } = req.params;
     const { status, restaurantId } = req.body;
-
-    const validStatuses = ['PENDING', 'CONFIRMED', 'PREPARING', 'READY', 'DELIVERED', 'CANCELLED'];
     
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'حالة الطلب غير صالحة' 
-      });
-    }
-
-    const order = await prisma.order.update({
-      where: { id: orderId },
-      data: { status }
-    });
-
-    // إرسال التحديث عبر Socket.io
+    await db.query('UPDATE orders SET status = $1 WHERE id = $2', [status, orderId]);
+    
     if (restaurantId) {
       emitOrderStatusUpdate(restaurantId, orderId, status);
     }
-
-    res.json({ 
-      success: true, 
-      data: order,
-      message: 'تم تحديث حالة الطلب' 
-    });
+    
+    res.json({ success: true, message: 'تم تحديث حالة الطلب' });
   } catch (error) {
-    console.error('Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// جلب الطلبات النشطة
-app.get('/api/orders/active/:restaurantId', async (req, res) => {
+
+// ============ Admin API ============
+
+// تسجيل الدخول
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    const { restaurantId, username, password } = req.body;
+    const result = await db.query('SELECT * FROM staff WHERE restaurant_id = $1 AND username = $2 AND password = $3', [restaurantId, username, password]);
+    if (result.rows.length > 0) {
+      res.json({ success: true, data: result.rows[0] });
+    } else {
+      res.status(401).json({ success: false, message: 'بيانات خاطئة' });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// إحصائيات
+app.get('/api/admin/stats/:restaurantId', async (req, res) => {
   try {
     const { restaurantId } = req.params;
+    const totalOrders = await db.query('SELECT COUNT(*) FROM orders WHERE restaurant_id = $1', [restaurantId]);
+    const activeOrders = await db.query("SELECT COUNT(*) FROM orders WHERE restaurant_id = $1 AND status IN ('PENDING','PREPARING','READY')", [restaurantId]);
+    const revenue = await db.query("SELECT COALESCE(SUM(total_amount),0) FROM orders WHERE restaurant_id = $1 AND status = 'DELIVERED'", [restaurantId]);
+    const items = await db.query('SELECT COUNT(*) FROM menu_items WHERE restaurant_id = $1', [restaurantId]);
     
-    const orders = await prisma.order.findMany({
-      where: {
-        restaurantId,
-        status: { in: ['PENDING', 'CONFIRMED', 'PREPARING', 'READY'] }
-      },
-      include: {
-        orderItems: {
-          include: {
-            menuItem: { select: { name: true } }
-          }
-        },
-        table: { select: { tableNumber: true } }
-      },
-      orderBy: { createdAt: 'asc' }
-    });
-
-    res.json({ success: true, data: orders });
+    res.json({ success: true, data: {
+      totalOrders: totalOrders.rows[0].count,
+      activeOrders: activeOrders.rows[0].count,
+      totalRevenue: revenue.rows[0].sum,
+      totalItems: items.rows[0].count
+    }});
   } catch (error) {
-    console.error('Error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// إضافة صنف
+app.post('/api/admin/menu-items', async (req, res) => {
+  try {
+    const { restaurantId, categoryId, name, desc, price, time } = req.body;
+    const crypto = require('crypto');
+    const id = crypto.randomUUID();
+    await db.query('INSERT INTO menu_items (id, restaurant_id, category_id, name, description, price, preparation_time) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+      [id, restaurantId, categoryId, name, desc, price, time]);
+    res.json({ success: true, data: { id } });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// حذف صنف
+app.delete('/api/admin/menu-items/:id', async (req, res) => {
+  try {
+    await db.query('DELETE FROM menu_items WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// جلب الطاولات
+app.get('/api/admin/tables/:restaurantId', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM tables WHERE restaurant_id = $1', [req.params.restaurantId]);
+    res.json({ success: true, data: result.rows });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// إضافة طاولة
+app.post('/api/admin/tables', async (req, res) => {
+  try {
+    const { restaurantId, tableNumber } = req.body;
+    const crypto = require('crypto');
+    const id = crypto.randomUUID();
+    const qrCode = crypto.randomUUID();
+    await db.query('INSERT INTO tables (id, restaurant_id, table_number, qr_code) VALUES ($1,$2,$3,$4)',
+      [id, restaurantId, tableNumber, qrCode]);
+    res.json({ success: true, data: { id, qrCode } });
+  } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -347,61 +279,19 @@ app.get('/api/orders/active/:restaurantId', async (req, res) => {
 app.get('/api/orders/all/:restaurantId', async (req, res) => {
   try {
     const { restaurantId } = req.params;
-    
-    const orders = await prisma.order.findMany({
-      where: { restaurantId },
-      include: {
-        orderItems: {
-          include: {
-            menuItem: { select: { name: true } }
-          }
-        },
-        table: { select: { tableNumber: true } }
-      },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    res.json({ success: true, data: orders });
-  } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// إنشاء طاولة
-app.post('/api/tables', async (req, res) => {
-  try {
-    const { restaurantId, tableNumber } = req.body;
-    
-    if (!restaurantId || !tableNumber) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'معرف المطعم ورقم الطاولة مطلوبان' 
-      });
+    const orders = await db.query('SELECT * FROM orders WHERE restaurant_id = $1 ORDER BY created_at DESC', [restaurantId]);
+    for (const order of orders.rows) {
+      const items = await db.query('SELECT oi.*, mi.name as item_name FROM order_items oi JOIN menu_items mi ON oi.menu_item_id = mi.id WHERE oi.order_id = $1', [order.id]);
+      order.items = items.rows;
     }
-
-    const qrCode = `QR-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-    const table = await prisma.table.create({
-      data: { restaurantId, tableNumber, qrCode }
-    });
-
-    res.status(201).json({ success: true, data: table });
+    res.json({ success: true, data: orders.rows });
   } catch (error) {
-    console.error('Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
 
-server.listen(PORT, async () => {
-  console.log(`🚀 الخادم يعمل على المنفذ ${PORT}`);
-  
-  try {
-    await prisma.$connect();
-    console.log('✅ تم الاتصال بقاعدة البيانات');
-  } catch (error) {
-    console.error('❌ فشل الاتصال بقاعدة البيانات:', error);
-  }
+server.listen(PORT, () => {
+  console.log(`🚀 الخادم يعمل على http://localhost:${PORT}`);
 });
